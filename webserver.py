@@ -1,107 +1,42 @@
 import tensorflow as tf
 import numpy as np
+from http.server import BaseHTTPRequestHandler, HTTPServer
+import json
+from flask import Flask, request, jsonify
 
-# Define the data schema for the history of turns
-history_schema = tf.TensorSpec(shape=(None, 2), dtype=tf.int32)
 
-# Define the function names for the AI model's inference and training
-inference_fn_name = "inference"
-training_fn_name = "train"
-
-# Define the web server
-class WebServer:
-    def __init__(self, model, history_length):
-        self.model = model
+class RPSModel:
+    def __init__(self, history_length, learning_rate=0.001):
         self.history_length = history_length
+        self.learning_rate = learning_rate
+        self.num_actions = 3  # rock, paper, and scissors :)
+        self.model = self.build_model()
 
-    def run(self):
-        html = """
-        <!DOCTYPE html>
-        <html>
-        <head>
-            <title>Rock Paper Scissors</title>
-        </head>
-        <body>
-            <h1>Rock Paper Scissors</h1>
-            <p>Choose your move:</p>
-            <button id="rock">Rock</button>
-            <button id="paper">Paper</button>
-            <button id="scissors">Scissors</button>
-            <p id="ai-move"></p>
-        </body>
-        <script>
-            // Define DOM element IDs for the user input and AI output display
-            const rockButton = document.getElementById("rock");
-            const paperButton = document.getElementById("paper");
-            const scissorsButton = document.getElementById("scissors");
-            const aiMove = document.getElementById("ai-move");
 
-            // Send the user's move to the server and display the AI's move
-            function sendMove(move) {
-                fetch("/play", {
-                    method: "POST",
-                    body: JSON.stringify({ move: move }),
-                    headers: {
-                        "Content-Type": "application/json"
-                    }
-                })
-                .then(response => response.json())
-                .then(data => {
-                    aiMove.textContent = "AI chose " + data.move;
-                });
-            }
+    def build_model(self):
+        input_layer = tf.keras.layers.Input(shape=(self.history_length, 2))
+        lstm_layer = tf.keras.layers.LSTM(128)(input_layer)
+        dense_layer = tf.keras.layers.Dense(64, activation='relu')(lstm_layer)
+        output_layer = tf.keras.layers.Dense(self.num_actions, activation='softmax')(dense_layer)
+        model = tf.keras.models.Model(inputs=input_layer, outputs=output_layer)
+        model.compile(optimizer=tf.keras.optimizers.Adam(learning_rate=self.learning_rate),
+                      loss=tf.keras.losses.CategoricalCrossentropy(),
+                      metrics=[tf.keras.metrics.CategoricalAccuracy()])
+        return model
 
-            // Add event listeners to the buttons
-            rockButton.addEventListener("click", () => {
-                sendMove("rock");
-            });
-            paperButton.addEventListener("click", () => {
-                sendMove("paper");
-            });
-            scissorsButton.addEventListener("click", () => {
-                sendMove("scissors");
-            });
-        </script>
-        </html>
-        """
 
-        # Define the web server routes
-        @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.string)])
-        def serve_html(request_body):
-            return html
+    def predict(self, history):
+        history = np.array(history[-self.history_length:])
+        history = np.expand_dims(history, axis=0)
+        prediction = self.model.predict(history)
+        return np.argmax(prediction)
 
-        @tf.function(input_signature=[tf.TensorSpec(shape=None, dtype=tf.string)])
-        def play(request_body):
-            # Parse the user's move from the request body
-            data = tf.io.decode_json_example(request_body)
-            user_move = data["move"]
-
-            # Get the AI's move
-            ai_move = self.model.predict(np.array([self.history]))
-
-            # Update the history with the user's move and the AI's move
-            self.history = np.append(self.history, [[self.move_to_int(user_move), ai_move]], axis=0)
-            self.history = self.history[-self.history_length:]
-
-            # Train the model on the updated history
-            self.model.train_on_batch(self.history[:-1], self.history[1:])
-
-            # Return the AI's move
-            return {"move": self.int_to_move(ai_move)}
-
-        # Define the web server
-        server = tf.saved_model.experimental.WebModel(
-            serve=serve_html,
-            input_signature=[tf.TensorSpec(shape=None, dtype=tf.string)],
-            output_signature=tf.TensorSpec(shape=None, dtype=tf.string)
-        )
-        server.compile(optimizer=tf.keras.optimizers.Adam())
-
-        # Initialize the history with random moves
-        self.history = np.random.randint(0, size=(self.history_length, 2))
-
-        # Start the web server
-        server.run('localhost:8080')
+    def train(self, history, action):
+        history = np.expand_dims(
+            np.array(history[-self.history_length:]), axis=0)
+        target = np.zeros((1, self.num_actions))
+        target[0, action] = 1
+        self.model.train_on_batch(history, target)
 
     def move_to_int(self, move):
         if move == "rock":
@@ -120,4 +55,107 @@ class WebServer:
             return "scissors"
 
 
-WebServer(RPSModel(10), 10)
+max_history_len = 5
+history = np.random.randint(3, size=(max_history_len, 2))
+app = Flask(__name__)
+model = RPSModel(max_history_len)
+
+
+@app.route("/", methods=["GET"])
+def index():
+    return """
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <title>Rock Paper Scissors</title>
+        </head>
+        <body>
+            <h1>Rock Paper Scissors</h1>
+            <p>Choose your move:</p>
+            <button id="rock">Rock</button>
+            <button id="paper">Paper</button>
+            <button id="scissors">Scissors</button>
+            <p id="ai-move"></p>
+        </body>
+        <script>
+            const rockButton = document.getElementById("rock");
+            const paperButton = document.getElementById("paper");
+            const scissorsButton = document.getElementById("scissors");
+            const aiMove = document.getElementById("ai-move");
+
+            // Send the user's move to the server and display the AI's move
+            function sendMove(move) {
+                fetch("/play", {
+                    method: "POST",
+                    body: JSON.stringify({ move: move }),
+                    headers: {
+                        "Content-Type": "application/json"
+                    }
+                })
+                .then(response => response.json())
+                .then(data => {
+                    const aimove = data.move;
+                    aiMove.textContent = "AI chose " + aimove;
+                    
+                    const usermove = move;
+                    const outcome = determineOutcome(usermove, aimove);
+                    
+                    const result = document.createElement("p");
+                    result.textContent = "You chose " + usermove + ". " + outcome;
+                    aiMove.parentNode.insertBefore(result, aiMove.nextSibling);
+                });
+            }
+
+            function determineOutcome(userChoice, aiChoice) {
+                if (userChoice === aiChoice) {
+                    return "It's a tie!";
+                } else if (
+                    (userChoice === "rock" && aiChoice === "scissors") ||
+                    (userChoice === "paper" && aiChoice === "rock") ||
+                    (userChoice === "scissors" && aiChoice === "paper")
+                ) {
+                    return "You win!";
+                } else {
+                    return "You lose!";
+                }
+            }
+
+            rockButton.addEventListener("click", () => {
+                sendMove("rock");
+            });
+            paperButton.addEventListener("click", () => {
+                sendMove("paper");
+            });
+            scissorsButton.addEventListener("click", () => {
+                sendMove("scissors");
+            });
+        </script>
+        </html>
+        """
+
+
+@app.route("/play", methods=["POST"])
+def play():
+    move = request.json["move"]
+    ai_move = process_move(move)
+    response_data = {"move": ai_move}
+    return jsonify(response_data)
+
+def process_move(user_move):
+    global history
+    global max_history_len
+
+    prediction = model.predict(history)
+    ai_move = (prediction + 2) % 3
+
+    # Update the history with the user's move and the AI's move
+    history = np.append(history, [[model.move_to_int(user_move), ai_move]], axis=0)
+
+    # Train the model on the updated history
+    model.train(history[:-1], history[-1:])
+
+    return model.int_to_move(ai_move)
+
+
+if __name__ == "__main__":
+    app.run()  # http://localhost:5000
