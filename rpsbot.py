@@ -1,7 +1,5 @@
 import tensorflow as tf
 import numpy as np
-from http.server import BaseHTTPRequestHandler, HTTPServer
-import json
 from flask import Flask, request, jsonify
 
 
