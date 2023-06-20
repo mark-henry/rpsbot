@@ -29,6 +29,7 @@ class RPSModel:
         history = np.array(history[-self.history_length:])
         history = np.expand_dims(history, axis=0)
         prediction = self.model.predict(history)
+        print(prediction)
         return np.argmax(prediction)
 
     def train(self, history, action):
@@ -55,10 +56,10 @@ class RPSModel:
             return "scissors"
 
 
-max_history_len = 5
+max_history_len = 15
 history = np.random.randint(3, size=(max_history_len, 2))
 app = Flask(__name__)
-model = RPSModel(max_history_len)
+model = RPSModel(max_history_len, learning_rate=.05)
 
 
 @app.route("/", methods=["GET"])
@@ -95,13 +96,12 @@ def index():
                 .then(response => response.json())
                 .then(data => {
                     const aimove = data.move;
-                    aiMove.textContent = "AI chose " + aimove;
                     
                     const usermove = move;
                     const outcome = determineOutcome(usermove, aimove);
                     
                     const result = document.createElement("p");
-                    result.textContent = "You chose " + usermove + ". " + outcome;
+                    result.textContent = "AI chose " + aimove + ". You chose " + usermove + ". " + outcome;
                     aiMove.parentNode.insertBefore(result, aiMove.nextSibling);
                 });
             }
@@ -146,13 +146,14 @@ def process_move(user_move):
     global max_history_len
 
     prediction = model.predict(history)
-    ai_move = (prediction + 2) % 3
+    ai_move = (prediction + 1) % 3
+
+    # Train the model on the user's move given the current history
+    user_move = model.move_to_int(user_move)
+    model.train(history, user_move)
 
     # Update the history with the user's move and the AI's move
-    history = np.append(history, [[model.move_to_int(user_move), ai_move]], axis=0)
-
-    # Train the model on the updated history
-    model.train(history[:-1], history[-1:])
+    history = np.append(history, [[user_move, ai_move]], axis=0)
 
     return model.int_to_move(ai_move)
 
